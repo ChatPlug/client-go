@@ -20,7 +20,7 @@ type session struct {
 type ChatPlugClient struct {
 	session    *session
 	client     *graphql.Client
-	instanceID string
+	InstanceID string
 	wsEndpoint string
 }
 
@@ -249,7 +249,7 @@ func (s *session) Subscribe(query string, variables map[string]interface{}) (<-c
 // Connect starts a websocket connection to the server and notifies it about it's initialization
 func (gqc *ChatPlugClient) Connect(instanceID string, httpEndpoint string, wsEndpoint string) {
 	gqc.client = graphql.NewClient(httpEndpoint)
-	gqc.instanceID = instanceID
+	gqc.InstanceID = instanceID
 	gqc.wsEndpoint = wsEndpoint
 	c := wsConnect(wsEndpoint)
 
@@ -273,7 +273,7 @@ func (gqc *ChatPlugClient) Close() {
 // SendMessage sends a message with given data to core server via graphql
 func (gqc *ChatPlugClient) SendMessage(body string, originId string, originThreadId string, username string, authorOriginId string, authorAvatarUrl string, attachments []*AttachmentInput) {
 	req := graphql.NewRequest(sendMessageMutation)
-	req.Var("instanceId", gqc.instanceID)
+	req.Var("instanceId", gqc.InstanceID)
 	req.Var("body", body)
 	req.Var("originId", originId)
 	req.Var("originThreadId", originThreadId)
@@ -303,7 +303,7 @@ func (gqc *ChatPlugClient) SubscribeToNewMessages() <-chan *MessageReceived {
 	gqc.session.ReadOp()
 
 	variables := make(map[string]interface{})
-	variables["id"] = gqc.instanceID
+	variables["id"] = gqc.InstanceID
 	channel := make(chan *MessageReceived)
 
 	subscriptionChan, _ := gqc.session.Subscribe(messageReceivedSubscription, variables)
