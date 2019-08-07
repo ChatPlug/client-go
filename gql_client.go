@@ -1,44 +1,21 @@
-package gql_client
+package client
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
-
 	"github.com/gorilla/websocket"
 	"github.com/machinebox/graphql"
+	"net/http"
 )
-
-type session struct {
-	ws      *websocket.Conn
-	errChan chan error
-}
-
-// ChatPlugClient holds connection with chatplug core server
-type ChatPlugClient struct {
-	session    *session
-	client     *graphql.Client
-	InstanceID string
-	wsEndpoint string
-}
 
 const (
 	connectionInitMsg      = "connection_init"      // Client -> Server
-	connectionTerminateMsg = "connection_terminate" // Client -> Server
 	startMsg               = "start"                // Client -> Server
-	stopMsg                = "stop"                 // Client -> Server
-	connectionAckMsg       = "connection_ack"       // Server -> Client
-	connectionErrorMsg     = "connection_error"     // Server -> Client
-	dataMsg                = "data"                 // Server -> Client
-	errorMsg               = "error"                // Server -> Client
-	completeMsg            = "complete"             // Server -> Client
-	connectionKeepAliveMsg = "ka"                   // Server -> Client
 	sendMessageMutation    = `
-	mutation sendMessage($instanceId: ID!, $body: String!, $originId: String!, $originThreadId: String!, $username: String!, $authorOriginId: String!, $authorAvatarUrl: String!, $attachments: [AttachmentInput!]!) {
+	mutation sendMessage($body: String!, $originId: String!, $originThreadId: String!, $username: String!, $authorOriginId: String!, $authorAvatarUrl: String!, $attachments: [AttachmentInput!]!) {
 		sendMessage(
-		  instanceId: $instanceId,
 		  input: {
 			body: $body,
 			originId: $originId,
@@ -55,8 +32,8 @@ const (
 		}
 	  }`
 	messageReceivedSubscription = `
-	  subscription ($id: ID!) {
-		  messageReceived(instanceId:$id) {
+	  subscription {
+		  messageReceived {
 			message {
 			  body
 			  id
@@ -90,8 +67,8 @@ const (
 	  }`
 
 	setInstanceStatusMutation = `
-	mutation ($id: ID!) {
-		setInstanceStatus(instanceId:$id, status:INITIALIZED) {
+	mutation {
+		setInstanceStatus(status:INITIALIZED) {
 		  status
 		  name
 		}
@@ -169,8 +146,8 @@ type configurationReceivedPayload struct {
 	} `json:"data"`
 }
 
-type operationMessage struct {
-	Payload payloadMessage `json:"payload,omitempty"`
+type OperationMessage struct {
+	Payload PayloadMessage `json:"payload,omitempty"`
 	ID      string         `json:"id,omitempty"`
 	Type    string         `json:"type"`
 }
@@ -179,146 +156,108 @@ type operationMessage struct {
 type IncomingPayload struct {
 	Payload *json.RawMessage `json:"payload,omitempty"`
 	Type    string           `json:"type"`
+	ID string `json:"id"`
 }
 
-type payloadMessage struct {
+type PayloadMessage struct {
 	Query     string                 `json:"query"`
 	Variables map[string]interface{} `json:"variables"`
+	AccessToken string `json:"accessToken"`
 }
 
-func wsConnect(url string) *websocket.Conn {
-	headers := make(http.Header)
-	headers.Add("Sec-Websocket-Protocol", "graphql-ws")
-	c, _, err := websocket.DefaultDialer.Dial(url, headers)
+type GQLClient struct {
+	WSUrl string
+	HTTPUrl string
+	Headers PayloadMessage
+	client 	*graphql.Client
 
-	if err != nil {
-		panic(err)
+	wsConn *websocket.Conn
+}
+
+func NewGQLClient(wsUrl string, httpUrl string, headers PayloadMessage) *GQLClient {
+	return &GQLClient{
+		WSUrl: wsUrl,
+		HTTPUrl: httpUrl,
+		Headers: headers,
+		client: graphql.NewClient(httpUrl),
 	}
-	return c
 }
 
-// ReadOp reads a single graphql operation from underlying websocket connection
-func (s *session) ReadOp() (*IncomingPayload, error) {
+// Request sends a graphql requests to the core server and returns a pointer to map with result
+func (gqc *GQLClient) Request(req *graphql.Request) (*map[string]interface{}, error) {
+	// make a request
+	req.Header.Add("Authentication", gqc.Headers.AccessToken)
+	ctx := context.Background()
+	var respData map[string]interface{}
+
+	if err := gqc.client.Run(ctx, req, &respData); err != nil {
+		return nil, err
+	}
+	return &respData, nil
+}
+
+func (gqc *GQLClient) ReadIncomingPayload() (*IncomingPayload, error) {
 	var msg IncomingPayload
-	err := s.ws.ReadJSON(&msg)
+	err := gqc.wsConn.ReadJSON(&msg)
 	if err != nil {
 		panic(err)
 	}
 	return &msg, err
 }
 
-// Subscribe starts a given graphql subscription and returns a chan with incoming data
-func (s *session) Subscribe(query string, variables map[string]interface{}) (<-chan *IncomingPayload, <-chan error) {
+func (gqc *GQLClient) WriteOperationPacket(packet *OperationMessage) {
+	_ = gqc.wsConn.WriteJSON(packet)
+}
 
+func (gqc *GQLClient) Subscribe(query string, variables map[string]interface{}) string {
+	subID := GenerateID()
+	gqc.WriteOperationPacket(&OperationMessage{Type: startMsg, ID: subID, Payload: PayloadMessage{
+		Query:     query,
+		Variables: variables,
+	}})
+
+	return subID
+}
+
+
+func (gqc *GQLClient) Connect() (<-chan *IncomingPayload, <-chan error) {
+	headers := make(http.Header)
+	headers.Add("Sec-Websocket-Protocol", "graphql-ws")
+	ws, _, err := websocket.DefaultDialer.Dial(gqc.WSUrl, headers)
+
+	if err != nil {
+		panic(err)
+	}
+	gqc.wsConn = ws
 	channel := make(chan *IncomingPayload)
+	errChan := make(chan error)
 
-	s.ws.WriteJSON(&operationMessage{
-		Type: startMsg,
-		ID:   "1",
-		Payload: payloadMessage{
-			Query:     query,
-			Variables: variables,
-		},
-	})
+	gqc.WriteOperationPacket(&OperationMessage{Type: connectionInitMsg, Payload: gqc.Headers})
+	_, _ = gqc.ReadIncomingPayload()
 
 	go func() {
 		defer close(channel)
-		defer close(s.errChan)
+		defer close(errChan)
 		for {
-			msg, err := s.ReadOp()
+			msg, err := gqc.ReadIncomingPayload()
 			if err != nil {
-				s.errChan <- err
+				errChan <- err
 			}
-			// kok, _ := json.MarshalIndent(&msg, "", "    ")
-			// fmt.Printf("%s\n", kok)
-
+			fmt.Println("got smth")
 			if msg.Type == "error" {
 				var errs []*ErrorMessage
 				err = json.Unmarshal(*msg.Payload, &errs)
-				log.Println(errs[0].Message)
-				log.Println(string(errs[0].Locations[0].Line))
+				fmt.Println(errs[0].Message)
 			}
+			fmt.Println(msg.ID)
+
 			channel <- msg
 
 		}
 	}()
 
-	return channel, s.errChan
+	return channel, errChan
 }
-
-// Connect starts a websocket connection to the server and notifies it about it's initialization
-func (gqc *ChatPlugClient) Connect(instanceID string, httpEndpoint string, wsEndpoint string) {
-	gqc.client = graphql.NewClient(httpEndpoint)
-	gqc.InstanceID = instanceID
-	gqc.wsEndpoint = wsEndpoint
-	c := wsConnect(wsEndpoint)
-
-	gqc.session = &session{
-		ws: c,
-	}
-	gqc.session.ws.WriteJSON(&operationMessage{Type: connectionInitMsg})
-	gqc.session.ReadOp()
-
-	req := graphql.NewRequest(setInstanceStatusMutation)
-	req.Var("id", instanceID)
-
-	gqc.Request(req)
-}
-
-// Close closes a websocket connection to the server
-func (gqc *ChatPlugClient) Close() {
-	gqc.session.ws.Close()
-}
-
-// SendMessage sends a message with given data to core server via graphql
-func (gqc *ChatPlugClient) SendMessage(body string, originId string, originThreadId string, username string, authorOriginId string, authorAvatarUrl string, attachments []*AttachmentInput) {
-	req := graphql.NewRequest(sendMessageMutation)
-	req.Var("instanceId", gqc.InstanceID)
-	req.Var("body", body)
-	req.Var("originId", originId)
-	req.Var("originThreadId", originThreadId)
-	req.Var("username", username)
-	req.Var("authorOriginId", authorOriginId)
-	req.Var("authorAvatarUrl", authorAvatarUrl)
-	req.Var("attachments", attachments)
-
-	fmt.Println("Sending sendMessage mutation to the core")
-	_, err := gqc.Request(req)
-	if err != nil {
-		fmt.Println("boop")
-		fmt.Println(err)
-	}
-}
-
-// SubscribeToNewMessages starts a subscription to core server's messages and returns a chan with parsed data
-func (gqc *ChatPlugClient) SubscribeToNewMessages() <-chan *MessageReceived {
-	// gqc.session.ws.Close()
-	c := wsConnect(gqc.wsEndpoint)
-
-	gqc.session = &session{
-		ws: c,
-	}
-
-	gqc.session.ws.WriteJSON(&operationMessage{Type: connectionInitMsg})
-	gqc.session.ReadOp()
-
-	variables := make(map[string]interface{})
-	variables["id"] = gqc.InstanceID
-	channel := make(chan *MessageReceived)
-
-	subscriptionChan, _ := gqc.session.Subscribe(messageReceivedSubscription, variables)
-	go func() {
-		for subscription := range subscriptionChan {
-			if subscription.Type == "data" {
-				var msg messageReceivedPayload
-				json.Unmarshal(*subscription.Payload, &msg)
-				channel <- &msg.Data.MessageReceived
-			}
-		}
-	}()
-	return channel
-}
-
 type ConfigurationField struct {
 	Type         string `json:"type"`
 	DefaultValue string `json:"defaultValue"`
@@ -334,38 +273,8 @@ type ConfigurationRequest struct {
 type ConfigurationResponse struct {
 	FieldValues []string `json:"fieldValues"`
 }
-
-func (gqc *ChatPlugClient) AwaitConfiguration(configurationSchema []ConfigurationField) *ConfigurationResponse {
-	variables := make(map[string]interface{})
-	variables["fields"] = configurationSchema
-	channel := make(chan *ConfigurationResponse)
-
-	subscriptionChan, _ := gqc.session.Subscribe(requestConfigurationRequest, variables)
-	go func() {
-	Loop:
-		for {
-			for subscription := range subscriptionChan {
-				if subscription.Type == "data" {
-					var cfg configurationReceivedPayload
-					json.Unmarshal(*subscription.Payload, &cfg)
-					channel <- &cfg.Data.ConfigurationReceived
-					break Loop
-				}
-			}
-		}
-	}()
-	res := <-channel
-	return res
-}
-
-// Request sends a graphql requests to the core server and returns a pointer to map with result
-func (gqc *ChatPlugClient) Request(req *graphql.Request) (*map[string]interface{}, error) {
-	// make a request
-	ctx := context.Background()
-	var respData map[string]interface{}
-
-	if err := gqc.client.Run(ctx, req, &respData); err != nil {
-		return nil, err
-	}
-	return &respData, nil
+func GenerateID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
