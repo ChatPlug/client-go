@@ -5,15 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net/http"
+
 	"github.com/gorilla/websocket"
 	"github.com/machinebox/graphql"
-	"net/http"
 )
 
 const (
-	connectionInitMsg      = "connection_init"      // Client -> Server
-	startMsg               = "start"                // Client -> Server
-	sendMessageMutation    = `
+	connectionInitMsg   = "connection_init" // Client -> Server
+	startMsg            = "start"           // Client -> Server
+	sendMessageMutation = `
 	mutation sendMessage($body: String!, $originId: String!, $originThreadId: String!, $username: String!, $authorOriginId: String!, $authorAvatarUrl: String!, $attachments: [AttachmentInput!]!) {
 		sendMessage(
 		  input: {
@@ -59,6 +60,23 @@ const (
 			targetThreadId
 		  }
 		}`
+	setSearchResultMutation = `
+	mutation setSearchResponse($q: String!, $res: [ThreadSearchResultInput!]!) {
+		setSearchResponse(forQuery:$q, threads:$res) {
+		  threads {
+			originId
+			name
+			iconUrl
+		  }
+		  forQuery
+		}
+	  }`
+	searchRequestSubscription = `
+	  subscription {
+		  subscribeToSearchRequests {
+			query
+		  }
+		}`
 	requestConfigurationRequest = `
 	subscription confRequest($fields: [ConfigurationField!]!){
 		configurationReceived(configuration:{fields: $fields}) {
@@ -102,6 +120,7 @@ type Thread struct {
 	Name              string `json:"name"`
 	OriginID          string `json:"originId"`
 	ThreadGroupID     string `json:"threadGroupId"`
+	IconURL           string `json:"iconUrl"`
 	ServiceInstanceID string `json:"serviceInstanceId"`
 }
 
@@ -114,6 +133,12 @@ type Message struct {
 	Body          string        `json:"body"`
 	ThreadGroupID string        `json:"threadGroupId"`
 	Attachments   []Attachment  `json:"attachments"`
+}
+
+type SearchThreadInput struct {
+	OriginID string `json:"originId"`
+	Name     string `json:"name"`
+	IconURL  string `json:"iconUrl"`
 }
 
 // ErrorLocation holds data about location of gql error
@@ -132,6 +157,16 @@ type ErrorMessage struct {
 type MessageReceived struct {
 	Message        Message `json:"message"`
 	TargetThreadID string  `json:"targetThreadId"`
+}
+
+type SearchRequest struct {
+	Query string `json:"query"`
+}
+
+type searchRequestPayload struct {
+	Data struct {
+		SubscribeToSearchRequests SearchRequest `json:"subscribeToSearchRequests"`
+	} `json:"data"`
 }
 
 type messageReceivedPayload struct {
@@ -156,30 +191,30 @@ type OperationMessage struct {
 type IncomingPayload struct {
 	Payload *json.RawMessage `json:"payload,omitempty"`
 	Type    string           `json:"type"`
-	ID string `json:"id"`
+	ID      string           `json:"id"`
 }
 
 type PayloadMessage struct {
-	Query     string                 `json:"query"`
-	Variables map[string]interface{} `json:"variables"`
-	AccessToken string `json:"accessToken"`
+	Query       string                 `json:"query"`
+	Variables   map[string]interface{} `json:"variables"`
+	AccessToken string                 `json:"accessToken"`
 }
 
 type GQLClient struct {
-	WSUrl string
+	WSUrl   string
 	HTTPUrl string
 	Headers PayloadMessage
-	client 	*graphql.Client
+	client  *graphql.Client
 
 	wsConn *websocket.Conn
 }
 
 func NewGQLClient(wsUrl string, httpUrl string, headers PayloadMessage) *GQLClient {
 	return &GQLClient{
-		WSUrl: wsUrl,
+		WSUrl:   wsUrl,
 		HTTPUrl: httpUrl,
 		Headers: headers,
-		client: graphql.NewClient(httpUrl),
+		client:  graphql.NewClient(httpUrl),
 	}
 }
 
@@ -219,7 +254,6 @@ func (gqc *GQLClient) Subscribe(query string, variables map[string]interface{}) 
 	return subID
 }
 
-
 func (gqc *GQLClient) Connect() (<-chan *IncomingPayload, <-chan error) {
 	headers := make(http.Header)
 	headers.Add("Sec-Websocket-Protocol", "graphql-ws")
@@ -258,6 +292,7 @@ func (gqc *GQLClient) Connect() (<-chan *IncomingPayload, <-chan error) {
 
 	return channel, errChan
 }
+
 type ConfigurationField struct {
 	Type         string `json:"type"`
 	DefaultValue string `json:"defaultValue"`
@@ -273,6 +308,7 @@ type ConfigurationRequest struct {
 type ConfigurationResponse struct {
 	FieldValues []string `json:"fieldValues"`
 }
+
 func GenerateID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)

@@ -1,32 +1,34 @@
 package client
 
 import (
-"encoding/json"
-"fmt"
-"log"
+	"encoding/json"
+	"fmt"
+	"log"
 
-"github.com/machinebox/graphql"
+	"github.com/machinebox/graphql"
 )
-
 
 // ChatPlugClient holds connection with chatplug core server
 type ChatPlugClient struct {
-	GQLClient *GQLClient
-	MessagesChan chan *MessageReceived
+	GQLClient             *GQLClient
+	MessagesChan          chan *MessageReceived
 	ConfigurationRecvChan chan *ConfigurationResponse
-	msgSubID string
-	cfgSubID string
+	SearchRequestsChan chan *SearchRequest
+	msgSubID              string
+	cfgSubID              string
+	searchSubID string
+
 }
-
-
 
 func NewChatPlugClient(wsURL string, httpUrl string, accessToken string) *ChatPlugClient {
 	return &ChatPlugClient{
 		GQLClient:             NewGQLClient(wsURL, httpUrl, PayloadMessage{AccessToken: accessToken}),
 		MessagesChan:          make(chan *MessageReceived),
 		ConfigurationRecvChan: make(chan *ConfigurationResponse),
-		msgSubID: "",
-		cfgSubID: "",
+		SearchRequestsChan:    make(chan *SearchRequest),
+		msgSubID:              "",
+		cfgSubID:              "",
+		searchSubID:          "",
 	}
 }
 
@@ -53,12 +55,29 @@ func (cpc *ChatPlugClient) SendMessage(body string, originId string, originThrea
 	}
 }
 
+// SetSearchResponse sets a response to a given search query
+func (cpc *ChatPlugClient) SetSearchResponse(forQuery string, threads []*SearchThreadInput) {
+	req := graphql.NewRequest(setSearchResultMutation)
+	req.Var("q", forQuery)
+	req.Var("res", threads)
+
+	fmt.Println("Sending sendMessage mutation to the core")
+	_, err := cpc.GQLClient.Request(req)
+	if err != nil {
+		fmt.Println("error occured")
+		fmt.Println(err)
+	}
+}
+
 // SubscribeToNewMessages starts a subscription to core server's messages
 func (cpc *ChatPlugClient) SubscribeToNewMessages() {
 	cpc.msgSubID = cpc.GQLClient.Subscribe(messageReceivedSubscription, map[string]interface{}{})
 }
 
-
+// SubscribeToNewMessages starts a subscription to thread search requests
+func (cpc *ChatPlugClient) SubscribeToSearchRequests() {
+	cpc.searchSubID = cpc.GQLClient.Subscribe(searchRequestSubscription, map[string]interface{}{})
+}
 
 func (cpc *ChatPlugClient) Connect() {
 	packets, _ := cpc.GQLClient.Connect()
@@ -85,6 +104,14 @@ func (cpc *ChatPlugClient) Connect() {
 						fmt.Printf(err.Error())
 					}
 					cpc.ConfigurationRecvChan <- &cfg.Data.ConfigurationReceived
+				}
+				if packet.ID == cpc.searchSubID {
+					var req searchRequestPayload
+					err := json.Unmarshal(*packet.Payload, &req)
+					if err != nil {
+						fmt.Printf(err.Error())
+					}
+					cpc.SearchRequestsChan <- &req.Data.SubscribeToSearchRequests
 				}
 			}
 		}
