@@ -298,6 +298,7 @@ func (gqc *GQLClient) Connect() (<-chan *IncomingPayload, <-chan error) {
 
 type ConfigurationField struct {
 	Type         string `json:"type"`
+	Name         string `json:"name"`
 	DefaultValue string `json:"defaultValue"`
 	Optional     bool   `json:"optional"`
 	Hint         string `json:"hint"`
