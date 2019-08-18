@@ -80,7 +80,10 @@ const (
 	requestConfigurationRequest = `
 	subscription confRequest($fields: [ConfigurationField!]!){
 		configurationReceived(configuration:{fields: $fields}) {
-		  fieldValues
+		  fieldValues {
+			  name
+			  value
+		  }
 		}
 	  }`
 
@@ -305,8 +308,13 @@ type ConfigurationRequest struct {
 	Fields []ConfigurationField `json:"fields"`
 }
 
+type ConfigurationFieldResult struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 type ConfigurationResponse struct {
-	FieldValues []string `json:"fieldValues"`
+	FieldValues []ConfigurationFieldResult `json:"fieldValues"`
 }
 
 func GenerateID() string {

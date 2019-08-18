@@ -13,11 +13,10 @@ type ChatPlugClient struct {
 	GQLClient             *GQLClient
 	MessagesChan          chan *MessageReceived
 	ConfigurationRecvChan chan *ConfigurationResponse
-	SearchRequestsChan chan *SearchRequest
+	SearchRequestsChan    chan *SearchRequest
 	msgSubID              string
 	cfgSubID              string
-	searchSubID string
-
+	searchSubID           string
 }
 
 func NewChatPlugClient(wsURL string, httpUrl string, accessToken string) *ChatPlugClient {
@@ -28,7 +27,7 @@ func NewChatPlugClient(wsURL string, httpUrl string, accessToken string) *ChatPl
 		SearchRequestsChan:    make(chan *SearchRequest),
 		msgSubID:              "",
 		cfgSubID:              "",
-		searchSubID:          "",
+		searchSubID:           "",
 	}
 }
 
